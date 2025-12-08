@@ -790,25 +790,88 @@ class Player:
              color = COLOR_KEY # Show player holding key
              
         pygame.draw.polygon(surface, color, points)
+
 class CodeInterpreter:
-    def __init__(self, console):
+    def __init__(self, console, game):
         self.action_queue = []
         self.console = console
+        self.game = game
+
     def run_code(self, code_str):
         self.action_queue = []
         self.console.clear()
+        
+        # Simulation State
+        sim_x, sim_y = self.game.player.grid_x, self.game.player.grid_y
+        sim_dir = self.game.player.direction # 0=N, 1=E, 2=S, 3=W
         
         lines = [l for l in code_str.split('\n') if l.strip() and not l.strip().startswith('#')]
         # if len(lines) > MAX_LINES:
         #     self.console.log("ERROR: Code too long!", COLOR_ERROR)
         #     return False
-        def move(): self.action_queue.append(('MOVE',))
-        def turn_left(): self.action_queue.append(('TURN', 'LEFT'))
-        def turn_right(): self.action_queue.append(('TURN', 'RIGHT'))
+
+        def move(): 
+            nonlocal sim_x, sim_y
+            # Calculate next pos
+            dx, dy = 0, 0
+            if sim_dir == 0: dy = -1
+            elif sim_dir == 1: dx = 1
+            elif sim_dir == 2: dy = 1
+            elif sim_dir == 3: dx = -1
+            
+            target_x, target_y = sim_x + dx, sim_y + dy
+            # Check collision with wall using game map
+            if not self.game.map.is_wall(target_x, target_y):
+                sim_x, sim_y = target_x, target_y
+            
+            self.action_queue.append(('MOVE',))
+
+        def turn_left(): 
+            nonlocal sim_dir
+            sim_dir = (sim_dir - 1) % 4
+            self.action_queue.append(('TURN', 'LEFT'))
+
+        def turn_right(): 
+            nonlocal sim_dir
+            sim_dir = (sim_dir + 1) % 4
+            self.action_queue.append(('TURN', 'RIGHT'))
+
+        # Sensors
+        def wall_ahead():
+            dx, dy = 0, 0
+            if sim_dir == 0: dy = -1
+            elif sim_dir == 1: dx = 1
+            elif sim_dir == 2: dy = 1
+            elif sim_dir == 3: dx = -1
+            return self.game.map.is_wall(sim_x + dx, sim_y + dy)
+
+        def path_left():
+            # Check left relative to current direction
+            left_dir = (sim_dir - 1) % 4
+            dx, dy = 0, 0
+            if left_dir == 0: dy = -1
+            elif left_dir == 1: dx = 1
+            elif left_dir == 2: dy = 1
+            elif left_dir == 3: dx = -1
+            return not self.game.map.is_wall(sim_x + dx, sim_y + dy)
+
+        def path_right():
+            # Check right relative to current direction
+            right_dir = (sim_dir + 1) % 4
+            dx, dy = 0, 0
+            if right_dir == 0: dy = -1
+            elif right_dir == 1: dx = 1
+            elif right_dir == 2: dy = 1
+            elif right_dir == 3: dx = -1
+            return not self.game.map.is_wall(sim_x + dx, sim_y + dy)
+
         env = {
             'move': move,
             'turn_left': turn_left,
             'turn_right': turn_right,
+            'wall_ahead': wall_ahead,
+            'path_left': path_left,
+            'path_right': path_right,
             'range': range,
             'print': lambda x: self.console.log(str(x))
         }
@@ -839,10 +902,12 @@ class Game:
         
         # UI Components
         # Reserve space for buttons
-        BUTTON_AREA_HEIGHT = 40
+        # UI Components
+        # Reserve space for buttons
+        BUTTON_AREA_HEIGHT = 80 # Increased for 2 rows
         self.editor = TextEditor(GAME_VIEW_WIDTH, 0, EDITOR_WIDTH, SCREEN_HEIGHT - 200 - BUTTON_AREA_HEIGHT, self.font)
         self.console = Console(GAME_VIEW_WIDTH, SCREEN_HEIGHT - 200, EDITOR_WIDTH, 200, self.font)
-        self.interpreter = CodeInterpreter(self.console)
+        self.interpreter = CodeInterpreter(self.console, self)
         
         # Buttons
         self.buttons = []
@@ -857,10 +922,18 @@ class Game:
             self.editor.insert_text(t)
             # Return focus to editor? It's always focused basically.
             
+        # Row 1: Actions
         self.buttons.append(Button(GAME_VIEW_WIDTH + 4, btn_y + 5, btn_w, btn_h, "move()", lambda: add_text("move()\n"), self.font))
         self.buttons.append(Button(GAME_VIEW_WIDTH + 4 + btn_w + margin, btn_y + 5, btn_w, btn_h, "left()", lambda: add_text("turn_left()\n"), self.font))
         self.buttons.append(Button(GAME_VIEW_WIDTH + 4 + 2*(btn_w + margin), btn_y + 5, btn_w, btn_h, "right()", lambda: add_text("turn_right()\n"), self.font))
         self.buttons.append(Button(GAME_VIEW_WIDTH + 4 + 3*(btn_w + margin), btn_y + 5, btn_w, btn_h, "loop", lambda: add_text("for i in range(1):\n    "), self.font))
+
+        # Row 2: Logic/Sensors
+        y2 = btn_y + 5 + btn_h + 5
+        self.buttons.append(Button(GAME_VIEW_WIDTH + 4, y2, btn_w, btn_h, "if wall", lambda: add_text("if wall_ahead():\n    "), self.font))
+        self.buttons.append(Button(GAME_VIEW_WIDTH + 4 + btn_w + margin, y2, btn_w, btn_h, "if left", lambda: add_text("if path_left():\n    "), self.font))
+        self.buttons.append(Button(GAME_VIEW_WIDTH + 4 + 2*(btn_w + margin), y2, btn_w, btn_h, "if right", lambda: add_text("if path_right():\n    "), self.font))
+        self.buttons.append(Button(GAME_VIEW_WIDTH + 4 + 3*(btn_w + margin), y2, btn_w, btn_h, "else", lambda: add_text("else:\n    "), self.font))
         
         # Play Button (Top Right of Editor area?)
         # Or just add to the list? Let's add it to the list but make it distinct.

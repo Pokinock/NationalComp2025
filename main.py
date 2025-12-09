@@ -41,8 +41,11 @@ COLOR_PLAY_BUTTON = (40, 100, 40)
 COLOR_PLAY_BUTTON_HOVER = (60, 150, 60)
 COLOR_KEY = (255, 215, 0)       # Gold
 COLOR_DOOR = (139, 69, 19)      # SaddleBrown
-# Game Rules
-MAX_LINES = 50 
+COLOR_SCROLLBAR = (80, 80, 80)
+COLOR_SCROLLBAR_HOVER = (100, 100, 100)
+COLOR_SCROLLBAR_ACTIVE = (120, 120, 120)
+COLOR_PATH_TRACK = (50, 200, 50, 150)  # Green with transparency for path tracking
+COLOR_PATH_TRACK_VISITED = (100, 255, 100, 100)  # Lighter green for visited cells
 # Game Rules
 MAX_LINES = 50 
 STARTING_COINS = 200
@@ -75,6 +78,8 @@ class Button:
         color = COLOR_BUTTON_HOVER if self.hovered else COLOR_BUTTON
         if self.text == "RUN":
              color = COLOR_PLAY_BUTTON_HOVER if self.hovered else COLOR_PLAY_BUTTON
+        elif self.text == "DELETE":
+             color = COLOR_ERROR if self.hovered else (150, 50, 50)
              
         pygame.draw.rect(surface, color, self.rect)
         pygame.draw.rect(surface, COLOR_GRID, self.rect, 1) # Border
@@ -104,6 +109,181 @@ class Console:
             surf = self.font.render(text, True, color)
             surface.blit(surf, (self.rect.left + 5, y))
             y += 20
+class PathTracker:
+    def __init__(self, game_map):
+        self.map = game_map
+        self.current_path = []
+        self.visited_cells = set()
+        self.predicted_path = []
+        self.last_code_hash = None
+        
+    def simulate_code(self, code_str):
+        """Simulate the code to predict the path"""
+        try:
+            # Create a simulation state
+            sim_x, sim_y = self.map.start_pos
+            sim_dir = 1  # Start facing East
+            
+            # Keep track of visited positions
+            visited = [(sim_x, sim_y)]
+            
+            # Define the environment for exec
+            def move():
+                nonlocal sim_x, sim_y
+                dx, dy = 0, 0
+                if sim_dir == 0: dy = -1
+                elif sim_dir == 1: dx = 1
+                elif sim_dir == 2: dy = 1
+                elif sim_dir == 3: dx = -1
+                
+                target_x, target_y = sim_x + dx, sim_y + dy
+                if not self.map.is_wall(target_x, target_y):
+                    sim_x, sim_y = target_x, target_y
+                    visited.append((sim_x, sim_y))
+                return True
+            
+            def turn_left():
+                nonlocal sim_dir
+                sim_dir = (sim_dir - 1) % 4
+                return True
+            
+            def turn_right():
+                nonlocal sim_dir
+                sim_dir = (sim_dir + 1) % 4
+                return True
+            
+            def wall_ahead():
+                dx, dy = 0, 0
+                if sim_dir == 0: dy = -1
+                elif sim_dir == 1: dx = 1
+                elif sim_dir == 2: dy = 1
+                elif sim_dir == 3: dx = -1
+                return self.map.is_wall(sim_x + dx, sim_y + dy)
+            
+            def path_left():
+                left_dir = (sim_dir - 1) % 4
+                dx, dy = 0, 0
+                if left_dir == 0: dy = -1
+                elif left_dir == 1: dx = 1
+                elif left_dir == 2: dy = 1
+                elif left_dir == 3: dx = -1
+                return not self.map.is_wall(sim_x + dx, sim_y + dy)
+            
+            def path_right():
+                right_dir = (sim_dir + 1) % 4
+                dx, dy = 0, 0
+                if right_dir == 0: dy = -1
+                elif right_dir == 1: dx = 1
+                elif right_dir == 2: dy = 1
+                elif right_dir == 3: dx = -1
+                return not self.map.is_wall(sim_x + dx, sim_y + dy)
+            
+            # Create execution environment
+            env = {
+                'move': move,
+                'turn_left': turn_left,
+                'turn_right': turn_right,
+                'wall_ahead': wall_ahead,
+                'path_left': path_left,
+                'path_right': path_right,
+                'range': range,
+                'print': lambda x: None
+            }
+            
+            # Execute the code
+            exec(code_str, {"__builtins__": {}}, env)
+            
+            # Update predicted path
+            self.predicted_path = visited
+            return True
+            
+        except Exception as e:
+            # If code has errors, clear predicted path
+            self.predicted_path = []
+            return False
+    
+    def update_from_player(self, player_pos):
+        """Update tracking based on actual player position"""
+        self.current_path.append(player_pos)
+        self.visited_cells.add(player_pos)
+    
+    def reset(self):
+        """Reset tracking"""
+        self.current_path = []
+        self.visited_cells = set()
+        self.predicted_path = []
+        self.last_code_hash = None
+    
+    def draw(self, surface, tile_size, offset_x, offset_y):
+        """Draw the path tracking visualization"""
+        # Draw predicted path (green)
+        for i, (x, y) in enumerate(self.predicted_path):
+            # Calculate position on screen
+            screen_x = offset_x + x * tile_size + tile_size // 2
+            screen_y = offset_y + y * tile_size + tile_size // 2
+            
+            # Draw a circle for each predicted position
+            radius = tile_size // 6
+            color = COLOR_PATH_TRACK
+            
+            # Make the path gradient (darker at start, lighter at end)
+            if len(self.predicted_path) > 1:
+                intensity = i / len(self.predicted_path)
+                r = int(50 + 150 * intensity)
+                g = int(200 + 55 * intensity)
+                b = 50
+                color = (r, g, b, 150)
+            
+            # Create a temporary surface for alpha blending
+            circle_surf = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+            pygame.draw.circle(circle_surf, color, (radius, radius), radius)
+            surface.blit(circle_surf, (screen_x - radius, screen_y - radius))
+            
+            # Draw connecting lines between consecutive points
+            if i > 0:
+                prev_x, prev_y = self.predicted_path[i-1]
+                prev_screen_x = offset_x + prev_x * tile_size + tile_size // 2
+                prev_screen_y = offset_y + prev_y * tile_size + tile_size // 2
+                
+                # Draw line with gradient
+                line_surf = pygame.Surface((tile_size * 2, tile_size * 2), pygame.SRCALPHA)
+                pygame.draw.line(line_surf, color, 
+                               (tile_size, tile_size),
+                               (tile_size + (screen_x - prev_screen_x), tile_size + (screen_y - prev_screen_y)), 
+                               max(2, tile_size // 8))
+                surface.blit(line_surf, (prev_screen_x - tile_size, prev_screen_y - tile_size))
+        
+        # Draw visited cells (lighter green)
+        for (x, y) in self.visited_cells:
+            screen_x = offset_x + x * tile_size
+            screen_y = offset_y + y * tile_size
+            
+            # Create a semi-transparent overlay for visited cells
+            visited_surf = pygame.Surface((tile_size, tile_size), pygame.SRCALPHA)
+            visited_surf.fill((*COLOR_PATH_TRACK_VISITED[:3], 50))  # Very light overlay
+            surface.blit(visited_surf, (screen_x, screen_y))
+            
+            # Draw a small marker in visited cells
+            center_x = screen_x + tile_size // 2
+            center_y = screen_y + tile_size // 2
+            marker_size = tile_size // 8
+            pygame.draw.circle(surface, COLOR_PATH_TRACK_VISITED[:3], 
+                             (center_x, center_y), marker_size)
+        
+        # Draw current path (if player is moving)
+        for i in range(1, len(self.current_path)):
+            x1, y1 = self.current_path[i-1]
+            x2, y2 = self.current_path[i]
+            
+            screen_x1 = offset_x + x1 * tile_size + tile_size // 2
+            screen_y1 = offset_y + y1 * tile_size + tile_size // 2
+            screen_x2 = offset_x + x2 * tile_size + tile_size // 2
+            screen_y2 = offset_y + y2 * tile_size + tile_size // 2
+            
+            # Draw line for actual path taken
+            pygame.draw.line(surface, (255, 255, 100, 200), 
+                           (screen_x1, screen_y1), (screen_x2, screen_y2), 
+                           max(3, tile_size // 6))
 class TextEditor:
     def __init__(self, x, y, width, height, font):
         self.rect = pygame.Rect(x, y, width, height)
@@ -114,6 +294,25 @@ class TextEditor:
         self.scroll_y = 0
         self.selection_start = None # (row, col) or None
         self.line_height = 24
+        
+        # Scrolling variables
+        self.scrollbar_width = 10
+        self.scrollbar_rect = pygame.Rect(
+            self.rect.right - self.scrollbar_width,
+            self.rect.top,
+            self.scrollbar_width,
+            self.rect.height
+        )
+        self.scrollbar_handle_height = 100
+        self.scrollbar_handle_rect = pygame.Rect(
+            self.scrollbar_rect.left,
+            self.scrollbar_rect.top,
+            self.scrollbar_rect.width,
+            self.scrollbar_handle_height
+        )
+        self.scrollbar_dragging = False
+        self.scrollbar_hovered = False
+        self.max_visible_lines = self.rect.height // self.line_height
         
         # Initialize clipboard support
         try:
@@ -126,17 +325,117 @@ class TextEditor:
         self.suggestions = []
         self.suggestion_index = 0
         self.autocomplete_keywords = ['move()', 'turn_left()', 'turn_right()', 'range()', 'for i in range():']
+    
+    def update_scrollbar(self):
+        total_lines = len(self.lines)
+        if total_lines <= self.max_visible_lines:
+            self.scroll_y = 0
+            self.scrollbar_handle_rect.top = self.scrollbar_rect.top
+            self.scrollbar_handle_rect.height = self.scrollbar_rect.height
+            return
+        
+        # Calculate scrollbar handle position and size
+        visible_ratio = self.max_visible_lines / total_lines
+        self.scrollbar_handle_height = max(20, int(self.scrollbar_rect.height * visible_ratio))
+        
+        # Calculate handle position based on scroll_y
+        scroll_range = total_lines - self.max_visible_lines
+        if scroll_range > 0:
+            scroll_ratio = self.scroll_y / scroll_range
+            max_top = self.scrollbar_rect.bottom - self.scrollbar_handle_height
+            self.scrollbar_handle_rect.top = self.scrollbar_rect.top + int(scroll_ratio * (max_top - self.scrollbar_rect.top))
+        else:
+            self.scrollbar_handle_rect.top = self.scrollbar_rect.top
+        
+        self.scrollbar_handle_rect.height = self.scrollbar_handle_height
+    
+    def scroll_to_cursor(self):
+        # Ensure cursor is visible
+        if self.cursor_row < self.scroll_y:
+            self.scroll_y = self.cursor_row
+        elif self.cursor_row >= self.scroll_y + self.max_visible_lines:
+            self.scroll_y = self.cursor_row - self.max_visible_lines + 1
+        self.update_scrollbar()
+    
+    def handle_scrollbar_event(self, event):
+        if event.type == pygame.MOUSEMOTION:
+            # Check if mouse is over scrollbar
+            self.scrollbar_hovered = self.scrollbar_rect.collidepoint(event.pos)
+            
+            if self.scrollbar_dragging:
+                # Calculate new scroll position based on mouse position
+                mouse_y = event.pos[1]
+                total_lines = len(self.lines)
+                
+                if total_lines > self.max_visible_lines:
+                    # Calculate available movement range
+                    handle_min_y = self.scrollbar_rect.top
+                    handle_max_y = self.scrollbar_rect.bottom - self.scrollbar_handle_height
+                    
+                    # Clamp mouse position
+                    new_handle_y = max(handle_min_y, min(mouse_y - self.scrollbar_drag_offset, handle_max_y))
+                    
+                    # Calculate scroll position
+                    scroll_range = total_lines - self.max_visible_lines
+                    scroll_ratio = (new_handle_y - handle_min_y) / (handle_max_y - handle_min_y)
+                    self.scroll_y = int(scroll_ratio * scroll_range)
+                    self.update_scrollbar()
+        
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button == 1 and self.scrollbar_rect.collidepoint(event.pos):
+                if self.scrollbar_handle_rect.collidepoint(event.pos):
+                    # Start dragging the handle
+                    self.scrollbar_dragging = True
+                    self.scrollbar_drag_offset = event.pos[1] - self.scrollbar_handle_rect.top
+                else:
+                    # Click on scrollbar track - jump to that position
+                    total_lines = len(self.lines)
+                    if total_lines > self.max_visible_lines:
+                        # Calculate click position relative to scrollbar
+                        click_ratio = (event.pos[1] - self.scrollbar_rect.top) / self.scrollbar_rect.height
+                        scroll_range = total_lines - self.max_visible_lines
+                        self.scroll_y = int(click_ratio * scroll_range)
+                        self.scroll_y = max(0, min(self.scroll_y, scroll_range))
+                        self.update_scrollbar()
+        
+        elif event.type == pygame.MOUSEBUTTONUP:
+            if event.button == 1:
+                self.scrollbar_dragging = False
+        
+        elif event.type == pygame.MOUSEWHEEL:
+            # Scroll with mouse wheel
+            self.scroll_y -= event.y * 3  # Scroll 3 lines per wheel tick
+            total_lines = len(self.lines)
+            self.scroll_y = max(0, min(self.scroll_y, total_lines - self.max_visible_lines))
+            self.update_scrollbar()
+            return True
+        
+        return False
+    
+    def clear(self):
+        """Clear all text from editor"""
+        self.lines = [""]
+        self.cursor_row = 0
+        self.cursor_col = 0
+        self.scroll_y = 0
+        self.selection_start = None
+        self.update_scrollbar()
+    
     def get_text(self):
         return "\n".join(self.lines)
+    
     def set_text(self, text):
         self.lines = text.split('\n')
         self.cursor_row = min(len(self.lines)-1, self.cursor_row)
         self.cursor_col = min(len(self.lines[self.cursor_row]), self.cursor_col)
+        self.scroll_to_cursor()
+    
     def copy_to_clipboard(self, text):
         if self.tk_root:
             self.tk_root.clipboard_clear()
             self.tk_root.clipboard_append(text)
             self.tk_root.update()
+    
     def get_from_clipboard(self):
         if self.tk_root:
             try:
@@ -144,7 +443,12 @@ class TextEditor:
             except:
                 return ""
         return ""
+    
     def handle_input(self, event):
+        # Handle scrollbar events first
+        if self.handle_scrollbar_event(event):
+            return
+        
         if event.type == pygame.KEYDOWN:
             # Autocomplete Priority Handling
             if self.suggestions:
@@ -156,13 +460,26 @@ class TextEditor:
                     return
                 elif event.key == pygame.K_TAB or event.key == pygame.K_RETURN:
                     self.complete_suggestion()
+                    self.scroll_to_cursor()
                     return
                 elif event.key == pygame.K_ESCAPE:
                     self.suggestions = []
                     return
+            
             # Modifiers
             ctrl = event.mod & pygame.KMOD_CTRL
             shift = event.mod & pygame.KMOD_SHIFT
+            
+            # Page Up/Down for scrolling
+            if event.key == pygame.K_PAGEUP:
+                self.scroll_y = max(0, self.scroll_y - self.max_visible_lines)
+                self.update_scrollbar()
+                return
+            elif event.key == pygame.K_PAGEDOWN:
+                total_lines = len(self.lines)
+                self.scroll_y = min(total_lines - self.max_visible_lines, self.scroll_y + self.max_visible_lines)
+                self.update_scrollbar()
+                return
             
             # Navigation
             if event.key == pygame.K_UP:
@@ -209,11 +526,10 @@ class TextEditor:
             if event.button == 1 and self.rect.collidepoint(event.pos):
                 # Calculate row
                 rel_y = event.pos[1] - self.rect.top - 5
-                row = rel_y // self.line_height
+                row = rel_y // self.line_height + self.scroll_y
                 self.cursor_row = max(0, min(len(self.lines) - 1, row))
                 
                 # Calculate col (Assuming fixed width font approx)
-                # Consolas 18px is roughly 10px wide per char? Let's measure ' '
                 char_w = self.font.size(' ')[0]
                 rel_x = event.pos[0] - self.rect.left - 40 # 40 is margin
                 col = round(rel_x / char_w)
@@ -221,16 +537,20 @@ class TextEditor:
                 
                 # Reset selection on click
                 self.selection_start = None
+                self.scroll_to_cursor()
+    
     def move_cursor(self, d_row, d_col, select):
         self.suggestions = [] # Clear suggestions on move
         if select and self.selection_start is None:
             self.selection_start = (self.cursor_row, self.cursor_col)
         elif not select:
             self.selection_start = None
+        
         # Vertical
         if d_row != 0:
             self.cursor_row = max(0, min(len(self.lines) - 1, self.cursor_row + d_row))
             self.cursor_col = min(len(self.lines[self.cursor_row]), self.cursor_col)
+            self.scroll_to_cursor()
         
         # Horizontal
         if d_col != 0:
@@ -239,14 +559,17 @@ class TextEditor:
                 if self.cursor_row > 0:
                     self.cursor_row -= 1
                     self.cursor_col = len(self.lines[self.cursor_row])
+                    self.scroll_to_cursor()
                 else:
                     self.cursor_col = 0
             elif self.cursor_col > len(self.lines[self.cursor_row]):
                 if self.cursor_row < len(self.lines) - 1:
                     self.cursor_row += 1
                     self.cursor_col = 0
+                    self.scroll_to_cursor()
                 else:
                     self.cursor_col = len(self.lines[self.cursor_row])
+    
     def move_word_left(self, select):
         # Simple word jump implementation
         line = self.lines[self.cursor_row]
@@ -259,6 +582,7 @@ class TextEditor:
         while i > 0 and line[i] != ' ': i -= 1 # Skip word
         self.cursor_col = i if i == 0 else i + 1
         if select and self.selection_start is None: self.selection_start = (self.cursor_row, self.cursor_col) # Fix selection logic later if needed
+    
     def move_word_right(self, select):
         line = self.lines[self.cursor_row]
         if self.cursor_col >= len(line):
@@ -269,14 +593,17 @@ class TextEditor:
         while i < len(line) and line[i] != ' ': i += 1
         while i < len(line) and line[i] == ' ': i += 1
         self.cursor_col = i
+    
     def move_to_line_start(self, select):
         if select and self.selection_start is None: self.selection_start = (self.cursor_row, self.cursor_col)
         elif not select: self.selection_start = None
         self.cursor_col = 0
+    
     def move_to_line_end(self, select):
         if select and self.selection_start is None: self.selection_start = (self.cursor_row, self.cursor_col)
         elif not select: self.selection_start = None
         self.cursor_col = len(self.lines[self.cursor_row])
+    
     def get_selection_range(self):
         if self.selection_start is None: return None
         
@@ -286,6 +613,7 @@ class TextEditor:
         if (r1, c1) > (r2, c2):
             return (r2, c2), (r1, c1)
         return (r1, c1), (r2, c2)
+    
     def delete_selection(self):
         sel = self.get_selection_range()
         if not sel: return False
@@ -300,9 +628,13 @@ class TextEditor:
         
         self.cursor_row, self.cursor_col = r1, c1
         self.selection_start = None
+        self.scroll_to_cursor()
         return True
+    
     def backspace(self):
-        if self.delete_selection(): return
+        if self.delete_selection(): 
+            self.scroll_to_cursor()
+            return
         
         if self.cursor_col > 0:
             line = self.lines[self.cursor_row]
@@ -317,8 +649,12 @@ class TextEditor:
             del self.lines[self.cursor_row]
             self.cursor_row -= 1
             self.update_suggestions()
+        self.scroll_to_cursor()
+    
     def delete(self):
-        if self.delete_selection(): return
+        if self.delete_selection(): 
+            self.scroll_to_cursor()
+            return
         
         if self.cursor_col < len(self.lines[self.cursor_row]):
             line = self.lines[self.cursor_row]
@@ -330,6 +666,8 @@ class TextEditor:
             self.lines[self.cursor_row] = line + next_line
             del self.lines[self.cursor_row+1]
             self.update_suggestions()
+        self.scroll_to_cursor()
+    
     def insert_text(self, text):
         self.delete_selection()
         
@@ -349,6 +687,9 @@ class TextEditor:
             self.lines.insert(self.cursor_row + len(lines_to_insert) - 1, lines_to_insert[-1] + suffix)
             self.cursor_row += len(lines_to_insert) - 1
             self.cursor_col = len(lines_to_insert[-1])
+        
+        self.scroll_to_cursor()
+    
     def insert_newline(self):
         self.delete_selection()
         line = self.lines[self.cursor_row]
@@ -365,10 +706,14 @@ class TextEditor:
         self.lines[self.cursor_row] = line[:self.cursor_col]
         self.cursor_row += 1
         self.cursor_col = len(indent)
+        self.scroll_to_cursor()
+    
     def select_all(self):
         self.selection_start = (0, 0)
         self.cursor_row = len(self.lines) - 1
         self.cursor_col = len(self.lines[-1])
+        self.scroll_to_cursor()
+    
     def copy(self):
         sel = self.get_selection_range()
         if not sel: return
@@ -383,13 +728,16 @@ class TextEditor:
             text += self.lines[r2][:c2]
         
         self.copy_to_clipboard(text)
+    
     def cut(self):
         self.copy()
         self.delete_selection()
+    
     def paste(self):
         text = self.get_from_clipboard()
         if text:
             self.insert_text(text)
+    
     def update_suggestions(self):
         self.suggestions = []
         line = self.lines[self.cursor_row]
@@ -409,6 +757,7 @@ class TextEditor:
                 self.suggestions.append(kw)
         
         self.suggestion_index = 0
+    
     def complete_suggestion(self):
         if not self.suggestions: return
         
@@ -424,6 +773,8 @@ class TextEditor:
         self.lines[self.cursor_row] = line[:start_col] + suggestion + line[self.cursor_col:]
         self.cursor_col = start_col + len(suggestion)
         self.suggestions = []
+        self.scroll_to_cursor()
+    
     def draw_suggestions(self, surface):
         if not self.suggestions: return
         
@@ -431,7 +782,7 @@ class TextEditor:
         # Calculate pixel position of cursor
         line = self.lines[self.cursor_row]
         cx = self.rect.left + 40 + self.font.size(line[:self.cursor_col])[0]
-        cy = self.rect.top + 5 + (self.cursor_row + 1) * self.line_height
+        cy = self.rect.top + 5 + (self.cursor_row - self.scroll_y + 1) * self.line_height
         
         box_w = 200
         box_h = len(self.suggestions) * 20 + 4
@@ -450,17 +801,23 @@ class TextEditor:
             
             surf = self.font.render(sugg, True, color)
             surface.blit(surf, (cx + 5, cy + 2 + i*20))
+    
     def draw(self, surface):
         pygame.draw.rect(surface, COLOR_EDITOR_BG, self.rect)
+        
+        # Draw visible lines only
+        start_line = self.scroll_y
+        end_line = min(start_line + self.max_visible_lines, len(self.lines))
         
         # Draw Selection
         sel = self.get_selection_range()
         if sel:
             (r1, c1), (r2, c2) = sel
             for r in range(r1, r2 + 1):
-                y = self.rect.top + 5 + r * self.line_height
-                if y > self.rect.bottom: break
-                
+                if r < start_line or r >= end_line:
+                    continue
+                    
+                y = self.rect.top + 5 + (r - start_line) * self.line_height
                 line = self.lines[r]
                 x_start = self.rect.left + 40 # Margin for line nums
                 
@@ -473,10 +830,11 @@ class TextEditor:
                 if e_col > len(line): p_width += 10 # Highlight newline
                 
                 pygame.draw.rect(surface, COLOR_SELECTION, (x_start + p_start, y, p_width, self.line_height))
+        
         # Draw Text
-        for i, line in enumerate(self.lines):
-            y = self.rect.top + 5 + i * self.line_height
-            if y > self.rect.bottom: break
+        for i in range(start_line, end_line):
+            line = self.lines[i]
+            y = self.rect.top + 5 + (i - start_line) * self.line_height
             
             # Line Number
             num_surf = self.font.render(str(i+1), True, COLOR_EDITOR_LINE_NUM)
@@ -495,12 +853,26 @@ class TextEditor:
                 surface.blit(comm_surf, (x, y))
             else:
                 self.draw_syntax_line(surface, line, x, y)
+            
             # Cursor
             if i == self.cursor_row and pygame.time.get_ticks() % 1000 < 500:
                 cx = self.rect.left + 40 + self.font.size(line[:self.cursor_col])[0]
                 pygame.draw.rect(surface, COLOR_CURSOR, (cx, y, 2, self.line_height))
         
+        # Draw scrollbar if needed
+        if len(self.lines) > self.max_visible_lines:
+            # Scrollbar background
+            pygame.draw.rect(surface, COLOR_SCROLLBAR, self.scrollbar_rect)
+            
+            # Scrollbar handle
+            handle_color = COLOR_SCROLLBAR_ACTIVE if self.scrollbar_dragging else (
+                COLOR_SCROLLBAR_HOVER if self.scrollbar_hovered else COLOR_SCROLLBAR
+            )
+            pygame.draw.rect(surface, handle_color, self.scrollbar_handle_rect)
+            pygame.draw.rect(surface, COLOR_GRID, self.scrollbar_handle_rect, 1)
+        
         self.draw_suggestions(surface)
+    
     def draw_syntax_line(self, surface, text, x, y):
         keywords = ['move', 'turn_left', 'turn_right', 'range', 'for', 'in', 'def', 'if', 'else']
         
@@ -530,6 +902,7 @@ class GameMap:
         self.keys = [] # List of positions
         self.doors = [] # List of positions
         self.generate_maze()
+    
     def generate_maze(self, num_doors=0):
         # Initialize with walls
         self.grid = [[1 for _ in range(self.size)] for _ in range(self.size)]
@@ -574,6 +947,7 @@ class GameMap:
         
         if self.grid[gy][gx-1] == 1 and self.grid[gy-1][gx] == 1:
              self.grid[gy][gx-1] = 0
+        
         # Add random loops ONLY if no doors (Strict Requirement)
         if num_doors == 0:
             for _ in range(self.size // 2):
@@ -586,6 +960,7 @@ class GameMap:
                             floors += 1
                     if floors >= 2:
                         self.grid[ry][rx] = 0
+        
         # Place Keys and Doors
         self.keys = []
         self.doors = []
@@ -633,6 +1008,7 @@ class GameMap:
                     
                     if idx + 1 < len(path):
                         current_start = path[idx+1]
+    
     def find_path(self, start, end):
         queue = [(start, [])]
         visited = {start}
@@ -647,6 +1023,7 @@ class GameMap:
                     visited.add((nx, ny))
                     queue.append(((nx, ny), path + [(cx, cy)]))
         return None
+    
     def get_reachable_distances(self, start, block_list):
         queue = [(start, 0)]
         visited = {start: 0}
@@ -659,6 +1036,12 @@ class GameMap:
                     visited[(nx, ny)] = dist + 1
                     queue.append(((nx, ny), dist + 1))
         return visited
+    
+    def is_wall(self, x, y):
+        if 0 <= x < self.size and 0 <= y < self.size:
+            return self.grid[y][x] == 1
+        return True
+    
     def draw(self, surface, tile_size, offset_x, offset_y):
         # Draw Grid Lines
         for x in range(self.size + 1):
@@ -669,6 +1052,7 @@ class GameMap:
             pygame.draw.line(surface, COLOR_GRID,
                              (offset_x, offset_y + y * tile_size),
                              (offset_x + self.size * tile_size, offset_y + y * tile_size))
+        
         # Draw Walls, Goal, Key, Door
         for y in range(self.size):
             for x in range(self.size):
@@ -692,13 +1076,10 @@ class GameMap:
                     pygame.draw.rect(surface, COLOR_DOOR, rect)
                     pygame.draw.rect(surface, (100, 50, 10), rect, 2) 
                     pygame.draw.circle(surface, (255, 215, 0), (rect[0] + tile_size - 8, cy), 3)
-    def is_wall(self, x, y):
-        if 0 <= x < self.size and 0 <= y < self.size:
-            return self.grid[y][x] == 1
-        return True
 class Player:
     def __init__(self, start_pos):
         self.reset(start_pos)
+    
     def reset(self, start_pos):
         self.grid_x, self.grid_y = start_pos
         self.direction = 1 # Start facing East
@@ -719,9 +1100,11 @@ class Player:
         self.crashed = False
         self.won = False
         self.keys_collected = 0
+    
     def get_angle_for_dir(self, d):
         # 0=N (0), 1=E (90), 2=S (180), 3=W (270)
         return d * 90.0
+    
     def start_move(self, dx, dy, duration=ANIMATION_DURATION_MS):
         self.start_x = self.x
         self.start_y = self.y
@@ -735,6 +1118,7 @@ class Player:
         self.animating = True
         self.anim_t = 0.0
         self.anim_duration = duration
+    
     def start_turn(self, new_dir):
         self.start_x = self.target_x
         self.start_y = self.target_y
@@ -749,6 +1133,7 @@ class Player:
         self.animating = True
         self.anim_t = 0.0
         self.anim_duration = ANIMATION_DURATION_MS
+    
     def update(self, dt_ms):
         if self.animating:
             self.anim_t += dt_ms / self.anim_duration
@@ -763,10 +1148,12 @@ class Player:
                 self.x = lerp(self.start_x, self.target_x, t)
                 self.y = lerp(self.start_y, self.target_y, t)
                 self.angle = lerp(self.start_angle, self.target_angle, t)
+    
     def draw(self, surface, tile_size, offset_x, offset_y):
         center_x = offset_x + self.x * tile_size + tile_size // 2
         center_y = offset_y + self.y * tile_size + tile_size // 2
         size = tile_size // 3
+        
         # Base triangle pointing UP (0 degrees)
         # Points relative to center
         p1 = (0, -size)
@@ -783,6 +1170,7 @@ class Player:
             nx = px * cos_a - py * sin_a
             ny = px * sin_a + py * cos_a
             return (center_x + nx, center_y + ny)
+        
         points = [rotate(p1), rotate(p2), rotate(p3)]
         
         color = COLOR_ERROR if self.crashed else COLOR_PLAYER
@@ -790,7 +1178,6 @@ class Player:
              color = COLOR_KEY # Show player holding key
              
         pygame.draw.polygon(surface, color, points)
-
 class CodeInterpreter:
     def __init__(self, console, game):
         self.action_queue = []
@@ -806,9 +1193,6 @@ class CodeInterpreter:
         sim_dir = self.game.player.direction # 0=N, 1=E, 2=S, 3=W
         
         lines = [l for l in code_str.split('\n') if l.strip() and not l.strip().startswith('#')]
-        # if len(lines) > MAX_LINES:
-        #     self.console.log("ERROR: Code too long!", COLOR_ERROR)
-        #     return False
 
         def move(): 
             nonlocal sim_x, sim_y
@@ -860,7 +1244,7 @@ class CodeInterpreter:
             right_dir = (sim_dir + 1) % 4
             dx, dy = 0, 0
             if right_dir == 0: dy = -1
-            elif right_dir == 1: dx = 1
+            if right_dir == 1: dx = 1
             elif right_dir == 2: dy = 1
             elif right_dir == 3: dx = -1
             return not self.game.map.is_wall(sim_x + dx, sim_y + dy)
@@ -885,14 +1269,19 @@ class CodeInterpreter:
 class Game:
     def __init__(self):
         pygame.init()
+        
+        # Initialize fullscreen mode
+        self.fullscreen = False
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("MazeBot")
+        
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont("Consolas", 18)
         self.large_font = pygame.font.SysFont("Consolas", 32)
         
         # Enable Key Repeat
         pygame.key.set_repeat(400, 50)
+        
         self.difficulty = "NORMAL"
         self.grid_size = 10
         self.line_cost = 10
@@ -900,10 +1289,11 @@ class Game:
         self.map = GameMap(self.grid_size)
         self.player = Player(self.map.start_pos)
         
+        # Initialize path tracker
+        self.path_tracker = PathTracker(self.map)
+        self.last_code_hash = None
+        
         # UI Components
-        # Reserve space for buttons
-        # UI Components
-        # Reserve space for buttons
         BUTTON_AREA_HEIGHT = 80 # Increased for 2 rows
         self.editor = TextEditor(GAME_VIEW_WIDTH, 0, EDITOR_WIDTH, SCREEN_HEIGHT - 200 - BUTTON_AREA_HEIGHT, self.font)
         self.console = Console(GAME_VIEW_WIDTH, SCREEN_HEIGHT - 200, EDITOR_WIDTH, 200, self.font)
@@ -920,7 +1310,6 @@ class Game:
             if self.state != "EDITING":
                 self.reset_run()
             self.editor.insert_text(t)
-            # Return focus to editor? It's always focused basically.
             
         # Row 1: Actions
         self.buttons.append(Button(GAME_VIEW_WIDTH + 4, btn_y + 5, btn_w, btn_h, "move()", lambda: add_text("move()\n"), self.font))
@@ -935,17 +1324,26 @@ class Game:
         self.buttons.append(Button(GAME_VIEW_WIDTH + 4 + 2*(btn_w + margin), y2, btn_w, btn_h, "if right", lambda: add_text("if path_right():\n    "), self.font))
         self.buttons.append(Button(GAME_VIEW_WIDTH + 4 + 3*(btn_w + margin), y2, btn_w, btn_h, "else", lambda: add_text("else:\n    "), self.font))
         
-        # Play Button (Top Right of Editor area?)
-        # Or just add to the list? Let's add it to the list but make it distinct.
-        # Actually, let's put it at the bottom right of the editor, above the console.
+        # Control buttons row (above helper buttons)
         play_btn_w = 80
         play_btn_x = SCREEN_WIDTH - play_btn_w - 20
-        play_btn_y = SCREEN_HEIGHT - 200 - BUTTON_AREA_HEIGHT - 40 # Above helper buttons
+        play_btn_y = SCREEN_HEIGHT - 200 - BUTTON_AREA_HEIGHT - 40
+        
+        # DELETE Button (leftmost)
+        delete_btn_x = play_btn_x - play_btn_w - 10
+        self.buttons.append(Button(delete_btn_x, play_btn_y, play_btn_w, 30, "DELETE", self.delete_code, self.font))
+        
+        # RESET Button
+        reset_btn_x = delete_btn_x - play_btn_w - 10
+        self.buttons.append(Button(reset_btn_x, play_btn_y, play_btn_w, 30, "RESET", self.reset_run, self.font))
+        
+        # RUN Button
         self.buttons.append(Button(play_btn_x, play_btn_y, play_btn_w, 30, "RUN", self.start_run, self.font))
         
-        # Reset Button (Left of RUN)
-        reset_btn_x = play_btn_x - play_btn_w - 10
-        self.buttons.append(Button(reset_btn_x, play_btn_y, play_btn_w, 30, "RESET", self.reset_run, self.font))
+        # FULL Button
+        full_btn_x = reset_btn_x - play_btn_w - 10
+        self.buttons.append(Button(full_btn_x, play_btn_y, play_btn_w, 30, "FULL", self.toggle_fullscreen, self.font))
+        
         # Menu Buttons
         self.menu_buttons = []
         btn_w = 400
@@ -954,16 +1352,113 @@ class Game:
         self.menu_buttons.append(Button(cx, 350, btn_w, btn_h, "1. NORMAL (10x10, Cost 10, Win 32x32)", lambda: self.set_difficulty("NORMAL"), self.font))
         self.menu_buttons.append(Button(cx, 400, btn_w, btn_h, "2. HARD (16x16, Cost 15, Win 50x50)", lambda: self.set_difficulty("HARD"), self.font))
         self.menu_buttons.append(Button(cx, 450, btn_w, btn_h, "3. EXTREME (24x24, Cost 20, Win 72x72)", lambda: self.set_difficulty("EXTREME"), self.font))
+        
         self.state = "MENU" # Start in Menu
         self.level = 1
         self.coins = STARTING_COINS
         self.current_run_cost = 0
         
         self.optimal_lines = self.calculate_optimal_lines()
+        
+        # Timer for live code analysis
+        self.last_live_update = 0
+        self.live_update_interval = 500  # Update path every 500ms
+    
+    def delete_code(self):
+        """Delete all code in the editor"""
+        self.editor.clear()
+        self.console.log("All code deleted.", COLOR_TEXT)
+        self.path_tracker.reset()
+    
+    def toggle_fullscreen(self):
+        self.fullscreen = not self.fullscreen
+        if self.fullscreen:
+            self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+            # Get actual screen size
+            global SCREEN_WIDTH, SCREEN_HEIGHT, GAME_VIEW_WIDTH, EDITOR_WIDTH
+            SCREEN_WIDTH, SCREEN_HEIGHT = self.screen.get_size()
+            GAME_VIEW_WIDTH = int(SCREEN_WIDTH * 0.6)
+            EDITOR_WIDTH = SCREEN_WIDTH - GAME_VIEW_WIDTH
+        else:
+            self.screen = pygame.display.set_mode((1280, 720))
+            SCREEN_WIDTH, SCREEN_HEIGHT = 1280, 720
+            GAME_VIEW_WIDTH = int(SCREEN_WIDTH * 0.6)
+            EDITOR_WIDTH = SCREEN_WIDTH - GAME_VIEW_WIDTH
+        
+        # Recalculate layout and reposition UI elements
+        self.calculate_layout()
+        self.reposition_ui()
+        self.console.log(f"{'Entered' if self.fullscreen else 'Exited'} Fullscreen Mode", COLOR_SUCCESS)
+    
+    def reposition_ui(self):
+        # Reposition the editor and console
+        BUTTON_AREA_HEIGHT = 80
+        self.editor.rect = pygame.Rect(GAME_VIEW_WIDTH, 0, EDITOR_WIDTH, SCREEN_HEIGHT - 200 - BUTTON_AREA_HEIGHT)
+        self.console.rect = pygame.Rect(GAME_VIEW_WIDTH, SCREEN_HEIGHT - 200, EDITOR_WIDTH, 200)
+        
+        # Update editor's scrollbar
+        self.editor.scrollbar_rect = pygame.Rect(
+            self.editor.rect.right - self.editor.scrollbar_width,
+            self.editor.rect.top,
+            self.editor.scrollbar_width,
+            self.editor.rect.height
+        )
+        self.editor.max_visible_lines = self.editor.rect.height // self.editor.line_height
+        self.editor.update_scrollbar()
+        
+        # Reposition buttons
+        btn_y = SCREEN_HEIGHT - 200 - BUTTON_AREA_HEIGHT
+        btn_w = (EDITOR_WIDTH - 20) // 4
+        btn_h = 30
+        margin = 4
+        
+        # Row 1: Actions
+        self.buttons[0].rect = pygame.Rect(GAME_VIEW_WIDTH + 4, btn_y + 5, btn_w, btn_h)
+        self.buttons[1].rect = pygame.Rect(GAME_VIEW_WIDTH + 4 + btn_w + margin, btn_y + 5, btn_w, btn_h)
+        self.buttons[2].rect = pygame.Rect(GAME_VIEW_WIDTH + 4 + 2*(btn_w + margin), btn_y + 5, btn_w, btn_h)
+        self.buttons[3].rect = pygame.Rect(GAME_VIEW_WIDTH + 4 + 3*(btn_w + margin), btn_y + 5, btn_w, btn_h)
+
+        # Row 2: Logic/Sensors
+        y2 = btn_y + 5 + btn_h + 5
+        self.buttons[4].rect = pygame.Rect(GAME_VIEW_WIDTH + 4, y2, btn_w, btn_h)
+        self.buttons[5].rect = pygame.Rect(GAME_VIEW_WIDTH + 4 + btn_w + margin, y2, btn_w, btn_h)
+        self.buttons[6].rect = pygame.Rect(GAME_VIEW_WIDTH + 4 + 2*(btn_w + margin), y2, btn_w, btn_h)
+        self.buttons[7].rect = pygame.Rect(GAME_VIEW_WIDTH + 4 + 3*(btn_w + margin), y2, btn_w, btn_h)
+        
+        # Control buttons
+        play_btn_w = 80
+        play_btn_x = SCREEN_WIDTH - play_btn_w - 20
+        play_btn_y = SCREEN_HEIGHT - 200 - BUTTON_AREA_HEIGHT - 40
+        
+        # Adjust indices based on the new button order
+        # DELETE button (index 8)
+        delete_btn_x = play_btn_x - play_btn_w - 10
+        self.buttons[8].rect = pygame.Rect(delete_btn_x, play_btn_y, play_btn_w, 30)
+        
+        # RESET button (index 9)
+        reset_btn_x = delete_btn_x - play_btn_w - 10
+        self.buttons[9].rect = pygame.Rect(reset_btn_x, play_btn_y, play_btn_w, 30)
+        
+        # RUN button (index 10)
+        self.buttons[10].rect = pygame.Rect(play_btn_x, play_btn_y, play_btn_w, 30)
+        
+        # FULL button (index 11)
+        full_btn_x = reset_btn_x - play_btn_w - 10
+        self.buttons[11].rect = pygame.Rect(full_btn_x, play_btn_y, play_btn_w, 30)
+        
+        # Reposition menu buttons
+        btn_w = 400
+        btn_h = 40
+        cx = SCREEN_WIDTH // 2 - btn_w // 2
+        self.menu_buttons[0].rect = pygame.Rect(cx, 350, btn_w, btn_h)
+        self.menu_buttons[1].rect = pygame.Rect(cx, 400, btn_w, btn_h)
+        self.menu_buttons[2].rect = pygame.Rect(cx, 450, btn_w, btn_h)
+    
     def calculate_layout(self):
         self.tile_size = min(GAME_VIEW_WIDTH // self.grid_size, (SCREEN_HEIGHT - HUD_HEIGHT) // self.grid_size)
         self.grid_offset_x = (GAME_VIEW_WIDTH - (self.grid_size * self.tile_size)) // 2
         self.grid_offset_y = HUD_HEIGHT + ((SCREEN_HEIGHT - HUD_HEIGHT) - (self.grid_size * self.tile_size)) // 2
+    
     def set_difficulty(self, diff):
         self.difficulty = diff
         if diff == "NORMAL":
@@ -995,6 +1490,7 @@ class Game:
         self.map.generate_maze(num_doors)
         
         self.player = Player(self.map.start_pos)
+        self.path_tracker = PathTracker(self.map)
         self.optimal_lines = self.calculate_optimal_lines()
         
         # Dynamic Starting Coins
@@ -1008,7 +1504,10 @@ class Game:
         self.editor.lines = ["move()"]
         self.editor.cursor_row = 0
         self.editor.cursor_col = 6
+        self.editor.scroll_y = 0
+        self.editor.update_scrollbar()
         self.console.log(f"Difficulty: {diff}. Cost: {self.line_cost}/line. Coins: {self.coins}", COLOR_SUCCESS)
+    
     def next_level(self):
         self.level += 1
         
@@ -1019,6 +1518,7 @@ class Game:
              
         self.coins += reward
         self.console.log(f"Level Complete! Reward: {reward} Coins.", COLOR_SUCCESS)
+        
         # Scale Difficulty (Size)
         if self.difficulty == "EXTREME":
             # 24 -> 32 -> 48 -> 64 -> 72
@@ -1043,6 +1543,7 @@ class Game:
             
         self.calculate_layout()
         self.console.log(f"Map Size Increased to {self.grid_size}x{self.grid_size}!", COLOR_KEYWORD)
+        
         # Determine num_doors for Extreme
         num_doors = 0
         if self.difficulty == "EXTREME":
@@ -1052,9 +1553,11 @@ class Game:
             else: num_doors = 2
         elif self.grid_size >= 16: # Normal/Hard threshold
              num_doors = 1
+        
         self.map = GameMap(self.grid_size) # Regenerate with current size
         self.map.generate_maze(num_doors)
         self.player.reset(self.map.start_pos)
+        self.path_tracker = PathTracker(self.map)
         self.state = "EDITING"
         self.optimal_lines = self.calculate_optimal_lines()
         self.current_run_cost = 0
@@ -1073,7 +1576,10 @@ class Game:
         self.editor.lines = ["move()"] 
         self.editor.cursor_row = 0
         self.editor.cursor_col = 6
+        self.editor.scroll_y = 0
+        self.editor.update_scrollbar()
         self.console.log(f"Level {self.level} Started!", COLOR_SUCCESS)
+    
     def calculate_optimal_lines(self):
         # BFS to find shortest path
         queue = [(self.map.start_pos, [])]
@@ -1136,11 +1642,16 @@ class Game:
             elif moves > 1: lines += 2
                 
         return lines
+    
     def handle_input(self):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
                 sys.exit()
+            
+            # Fullscreen toggle with F11
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
+                self.toggle_fullscreen()
             
             if self.state == "MENU":
                 for btn in self.menu_buttons:
@@ -1187,16 +1698,20 @@ class Game:
                 if self.state == "FINISHED" and self.player.won:
                     if event.key == pygame.K_RETURN:
                         self.next_level()
+    
     def reset_run(self):
         self.state = "EDITING"
         self.player.reset(self.map.start_pos)
+        self.path_tracker.reset()
         self.coins = self.level_start_coins # Restore coins
         self.console.log("Reset. Coins Restored.", COLOR_TEXT)
+    
     def start_run(self):
         code = self.editor.get_text()
         if self.interpreter.run_code(code):
             self.state = "RUNNING"
             self.player.reset(self.map.start_pos)
+            self.path_tracker.reset()
             
             lines_used = len([l for l in self.editor.lines if l.strip() and not l.strip().startswith('#')])
             
@@ -1207,13 +1722,25 @@ class Game:
                 self.console.log(f"Running... Cost: {cost} Coins. (Lines: {lines_used})", COLOR_TEXT)
             else:
                 self.console.log(f"Not enough coins! Need {cost}.", COLOR_ERROR)
-                return # Prevent run? Or allow negative? Let's allow negative for now or game over?
-                # User said "make each line cost 10 coins". Usually implies spending.
-                # If we block, they might get stuck. Let's allow debt or just warn.
-                # Let's allow it but show negative.
+    
     def update(self):
         dt = self.clock.get_time()
+        current_time = pygame.time.get_ticks()
+        
+        # Update live path tracking when editing
+        if self.state == "EDITING" and current_time - self.last_live_update > self.live_update_interval:
+            code = self.editor.get_text()
+            if code.strip():  # Only simulate if there's code
+                self.path_tracker.simulate_code(code)
+            self.last_live_update = current_time
+        
+        # Update player animation
         self.player.update(dt)
+        
+        # Update path tracker with player position
+        if self.state == "RUNNING" or self.state == "FINISHED":
+            self.path_tracker.update_from_player((self.player.grid_x, self.player.grid_y))
+        
         if self.state == "RUNNING" and not self.player.animating:
             if self.interpreter.action_queue:
                 action = self.interpreter.action_queue.pop(0)
@@ -1233,11 +1760,11 @@ class Game:
                 if (self.player.grid_x, self.player.grid_y) == self.map.goal_pos:
                     self.state = "FINISHED"
                     self.player.won = True
-                    # self.final_score = self.score # Score is cumulative now
                     self.console.log(f"GOAL! Level Complete. Press ENTER.", COLOR_SUCCESS)
                 else:
                     self.state = "FINISHED"
                     self.console.log("Stopped.", COLOR_TEXT)
+    
     def execute_move_sequence(self, moves):
         dx, dy = 0, 0
         if self.player.direction == 0: dy = -1
@@ -1283,6 +1810,7 @@ class Game:
         if crashed:
             self.console.log(f"Path blocked! Moved {valid_moves}/{moves} steps.", COLOR_ERROR)
             self.interpreter.action_queue = []
+    
     def execute_action(self, action):
         if action[0] == 'MOVE':
             # Should be handled by execute_move_sequence usually, but single moves might fall here if logic changes
@@ -1295,6 +1823,7 @@ class Game:
             elif action[1] == 'RIGHT':
                 new_dir = (self.player.direction + 1) % 4
             self.player.start_turn(new_dir)
+    
     def draw(self):
         self.screen.fill(COLOR_BG)
         if self.state == "MENU":
@@ -1306,12 +1835,19 @@ class Game:
             self.draw_game_over()
             pygame.display.flip()
             return
+        
         if self.state == "YOU_WON":
             self.draw_win()
             pygame.display.flip()
             return
+        
         # Draw Game View
         self.map.draw(self.screen, self.tile_size, self.grid_offset_x, self.grid_offset_y)
+        
+        # Draw path tracking (behind player)
+        self.path_tracker.draw(self.screen, self.tile_size, self.grid_offset_x, self.grid_offset_y)
+        
+        # Draw player (on top of path)
         self.player.draw(self.screen, self.tile_size, self.grid_offset_x, self.grid_offset_y)
         
         # Level Counter on Map (Bottom Left)
@@ -1332,11 +1868,13 @@ class Game:
         hud_text = f"LVL: {self.level} | COINS: {self.coins} | LINES: {lines_used} (Cost: {lines_used*self.line_cost}) | GOAL: {goal_lines}"
         hud_surf = hud_font.render(hud_text, True, COLOR_HUD_TEXT)
         self.screen.blit(hud_surf, (20, 10))
+        
         # Draw UI
         self.editor.draw(self.screen)
         self.console.draw(self.screen)
         for btn in self.buttons:
             btn.draw(self.screen)
+        
         # Draw Overlay Info
         if self.state == "FINISHED" and self.player.won:
             msg = f"LEVEL COMPLETE! Press ENTER"
@@ -1344,11 +1882,15 @@ class Game:
             # Center in Game View
             self.screen.blit(surf, (GAME_VIEW_WIDTH//2 - surf.get_width()//2, SCREEN_HEIGHT//2))
         
-        # Goal Info (Removed from bottom, now in HUD)
-        # goal_text = f"Goal: {self.optimal_lines} lines"
-        # g_surf = self.font.render(goal_text, True, COLOR_GOAL)
-        # self.screen.blit(g_surf, (GAME_VIEW_WIDTH + 10, SCREEN_HEIGHT - 225))
+        # Draw live tracking info
+        if self.state == "EDITING" and self.path_tracker.predicted_path:
+            predicted_length = len(self.path_tracker.predicted_path)
+            info_text = f"Predicted Path: {predicted_length} steps"
+            info_surf = self.font.render(info_text, True, COLOR_PATH_TRACK[:3])
+            self.screen.blit(info_surf, (GAME_VIEW_WIDTH + 10, 10))
+        
         pygame.display.flip()
+    
     def draw_menu(self):
         title = self.large_font.render("MazeBot", True, COLOR_PLAYER)
         self.screen.blit(title, (SCREEN_WIDTH//2 - title.get_width()//2, 200))
@@ -1359,8 +1901,9 @@ class Game:
         for btn in self.menu_buttons:
             btn.draw(self.screen)
         
-        esc = self.font.render("Press ESC to Quit", True, (100, 100, 100))
+        esc = self.font.render("Press ESC to Quit | F11: Fullscreen", True, (100, 100, 100))
         self.screen.blit(esc, (SCREEN_WIDTH//2 - esc.get_width()//2, 550))
+    
     def draw_game_over(self):
         title = self.large_font.render("GAME OVER", True, COLOR_ERROR)
         self.screen.blit(title, (SCREEN_WIDTH//2 - title.get_width()//2, 200))
@@ -1370,6 +1913,7 @@ class Game:
         
         esc = self.font.render("Press ESC to Return to Menu", True, (100, 100, 100))
         self.screen.blit(esc, (SCREEN_WIDTH//2 - esc.get_width()//2, 400))
+    
     def draw_win(self):
         title = self.large_font.render("YOU WON!", True, COLOR_SUCCESS)
         self.screen.blit(title, (SCREEN_WIDTH//2 - title.get_width()//2, 200))
@@ -1380,13 +1924,14 @@ class Game:
         
         esc = self.font.render("Press ESC to Return to Menu", True, (100, 100, 100))
         self.screen.blit(esc, (SCREEN_WIDTH//2 - esc.get_width()//2, 400))
+    
     def run(self):
         while True:
             self.handle_input()
             self.update()
             self.draw()
             self.clock.tick(FPS)
+
 if __name__ == "__main__":
     game = Game()
     game.run()
-
